@@ -1,274 +1,520 @@
 const IMAGES_PATH = "images/";
-let useAlternativeImages;
-let flipBlacklist;
-let blacklistStatus;
 const EXTENSION_NAME = chrome.runtime.getManifest().name;
+const PROCESSED_ATTR = "data-mrbeastify-bilibili-processed";
+const CONTAINER_ATTR = "data-mrbeastify-bilibili-container";
+const OVERLAY_ATTR = "data-mrbeastify-bilibili-overlay";
+const OWNED_POSITION_ATTR = "data-mrbeastify-bilibili-position";
+const SCHEDULE_DELAY_MS = 120;
+const FALLBACK_SCAN_MS = 3000;
 
-// Config
+let useAlternativeImages = false;
+let flipBlacklist = [];
+let alternativeImageSet = new Set();
+let blacklistStatus = "No flip blacklist loaded yet.";
+
 let extensionIsDisabled = false;
-let appearChance = 1.00; //%
-let flipChance = 0.25; //%
+let appearChance = 1.00;
+let flipChance = 0.25;
 
-// Apply the overlay
-function applyOverlay(thumbnailElement, overlayImageURL, flip = false) {
-    // Create a new img element for the overlay
-    const overlayImage = document.createElement("img");
-    overlayImage.id = EXTENSION_NAME;
-    overlayImage.src = overlayImageURL;
-    overlayImage.style.position = "absolute";
-    overlayImage.style.top = overlayImage.style.left = "50%";
-    overlayImage.style.width = "100%";
-    overlayImage.style.transform = `translate(-50%, -50%) ${flip ? 'scaleX(-1)' : ''}`; // Center and flip the image
-    overlayImage.style.zIndex = "0"; // Ensure overlay is on top but below the time indicator
-    thumbnailElement.parentElement.insertBefore(overlayImage, thumbnailElement.nextSibling /*Makes sure the image doesn't cover any info, but still overlays the original thumbnail*/ );
-};
+let highestImageIndex = 0;
+let scheduledScan = null;
+let observer = null;
+let fallbackInterval = null;
+let currentURL = location.href;
 
-function FindThumbnails() {
-    const imageSelectors = [
-        "ytd-thumbnail a > yt-image > img.yt-core-image", // old thumbnail images
-        'img.style-scope.yt-img-shadow[width="86"]', // notification images
-        '.yt-thumbnail-view-model__image img', // new main thumbnail images
-        'img.ytCoreImageHost' // another day, another queryselector
-    ];
+const explicitImageSelectors = [
+    ".bili-video-card__image--wrap img",
+    ".bili-video-card__cover img",
+    ".bili-video-card img",
+    ".feed-card img",
+    ".recommend-list-v1 img",
+    ".video-page-card-small img",
+    ".video-card-ad-small img",
+    ".video-awesome-img img.b-img__inner",
+    ".pic-box img.b-img__inner",
+    ".cover img.b-img__inner",
+    ".b-img img.b-img__inner",
+    ".carousel-item img",
+    ".carousel-inner__img img",
+    ".carousel-area-img img",
+    ".banner-img img",
+    ".carousel img",
+    "img[src*='bfs/archive']",
+    "img[src*='bfs/sycp']",
+    "img[src*='bfs/banner']",
+    "img[src*='bfs/live-key-frame']",
+    "img[src*='archive.biliimg.com']"
+];
 
-    const allImages = [];
-    for (const selector of imageSelectors) {
-        allImages.push(...Array.from(document.querySelectorAll(selector)));
+const coverContainerSelectors = [
+    ".bili-video-card__image--wrap",
+    ".bili-video-card__cover",
+    ".video-awesome-img",
+    ".pic-box",
+    ".cover",
+    ".carousel-item",
+    ".carousel-area-img",
+    ".banner-img",
+    ".b-img",
+    "a"
+];
+
+const excludedContainers = [
+    ".bili-avatar",
+    ".avatar",
+    ".face",
+    ".user-avatar",
+    ".v-avatar",
+    ".up-avatar",
+    ".login-panel",
+    ".mini-avatar",
+    ".bili-header .inner-logo",
+    ".logo",
+    ".logo-img",
+    ".bili-video-card__info",
+    ".bili-video-card__info--owner",
+    ".bili-video-card__stats",
+    ".status-1",
+    ".nav-user-center",
+    ".right-entry",
+    ".header-avatar-wrap"
+];
+
+function clampChance(value, fallback) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+        return fallback;
     }
 
-    // Check whether the aspect ratio matches that of a thumbnail
-    const targetAspectRatio = [16 / 9, 4 / 3];
-    const errorMargin = 0.02; // Allows for 4:3, since YouTube is badly coded
-
-    var listAllThumbnails = allImages.filter(image => {
-        // Check if the height is not 0 before calculating the aspect ratio
-        if (image.height === 0) {
-            return false;
-        }
-
-        const aspectRatio = image.width / image.height;
-        let isCorrectAspectRatio = (Math.abs(aspectRatio - targetAspectRatio[0]) < errorMargin) || (Math.abs(aspectRatio - targetAspectRatio[1]) < errorMargin);
-        return isCorrectAspectRatio;
-    });
-
-    // Select all images from the recommended video screen
-    const videoWallImages = document.querySelectorAll(".ytp-videowall-still-image"); // Because youtube video wall images are not properly classified as images
-    const cuedThumbnailOverlays = document.querySelectorAll('div.ytp-cued-thumbnail-overlay-image');
-    listAllThumbnails.push(...videoWallImages, ...cuedThumbnailOverlays);
-        
-    return listAllThumbnails.filter(image => {
-        const parent = image.parentElement;
-
-        // Checks whether it's a video preview
-        const isVideoPreview = parent.closest("#video-preview") !== null || Array.from(parent.classList).some(cls => cls.includes("ytAnimated"))
-
-        // Checks whether it's a chapter thumbnail
-        const isChapter = parent.closest("#endpoint") !== null
-
-        // Check if thumbnails have already been processed
-        const processed = Array.from(parent.children).filter(child => {
-            const alreadyHasAThumbnail =
-                child.id && // Child has ID
-                child.id.includes(EXTENSION_NAME);
-
-            return (
-                alreadyHasAThumbnail ||
-                isVideoPreview ||
-                isChapter
-            )
-        });
-
-        return processed.length == 0;
-    });
+    return Math.max(0, Math.min(1, numericValue));
 }
 
-// Looks for all thumbnails and applies overlay
-function applyOverlayToThumbnails() {
-    thumbnailElements = FindThumbnails()
-
-    // Apply overlay to each thumbnail
-    thumbnailElements.forEach((thumbnailElement) => {
-        // Apply overlay and add to processed thumbnails
-        const loops = Math.random() > 0.001 ? 1 : 20; // Easter egg
-
-        for (let i = 0; i < loops; i++) {
-            // Determine the image URL and whether it should be flipped
-            let flip = Math.random() < flipChance;
-            let baseImagePath = getRandomImageFromDirectory();
-            if (flip && flipBlacklist && flipBlacklist.includes(baseImagePath)) {
-                if (useAlternativeImages) {
-                    let newImagePath = `textFlipped/${baseImagePath}`;
-                    if (checkImageExistence(newImagePath)) {
-                        baseImagePath = newImagePath;
-                        flip = false
-                    }
-                } else {
-                    flip = false;
-                }
+function getStorage(defaults) {
+    return new Promise((resolve, reject) => {
+        chrome.storage.local.get(defaults, (result) => {
+            if (chrome.runtime.lastError) {
+                reject(chrome.runtime.lastError);
+                return;
             }
 
-            const overlayImageURL = Math.random() < appearChance ?
-                getImageURL(baseImagePath) :
-                ""; // Just set the url to "" if we don't want MrBeast to appear lol
-
-            applyOverlay(thumbnailElement, overlayImageURL, flip);
-        }
+            resolve(result);
+        });
     });
-
 }
 
-// Get the URL of an image
-function getImageURL(index) {
-    return chrome.runtime.getURL(`${IMAGES_PATH}${index}.png`);
+async function loadConfig() {
+    const defaults = {
+        extensionIsDisabled: false,
+        appearChance: 1.00,
+        flipChance: 0.25
+    };
+
+    try {
+        const config = await getStorage(defaults);
+        extensionIsDisabled = Boolean(config.extensionIsDisabled);
+        appearChance = clampChance(config.appearChance, defaults.appearChance);
+        flipChance = clampChance(config.flipChance, defaults.flipChance);
+    } catch (error) {
+        console.error(`${EXTENSION_NAME}: Error loading configuration.`, error);
+    }
 }
 
-// Checks if an image exists in the image folder
-async function checkImageExistence(index) {
-    const testedURL = getImageURL(index)
-
-    return fetch(testedURL)
-        .then(() => {
-            return true
-        }).catch(error => {
-            return false
-        })
+function getImageURL(imagePath) {
+    const path = String(imagePath).endsWith(".png") ? String(imagePath) : `${imagePath}.png`;
+    return chrome.runtime.getURL(`${IMAGES_PATH}${path}`);
 }
 
-////////////////////////
-//  BrandonXLF Magic  //
-////////////////////////
+async function imagePathExists(imagePath) {
+    try {
+        const response = await fetch(getImageURL(imagePath), { method: "HEAD" });
+        return response.ok;
+    } catch (error) {
+        return false;
+    }
+}
 
-// Defines the N size of last images that will not be repeated.
-const size_of_non_repeat = 8
-// List of the index of the last N selected images.
-const last_indexes = Array(size_of_non_repeat)
+const sizeOfNonRepeat = 8;
+const lastIndexes = Array(sizeOfNonRepeat).fill(-1);
 
-// Get a random image URL from a directory
 function getRandomImageFromDirectory() {
-    let randomIndex = -1
-
-    // If the number of images is less than the size of the non-repeat array, reset the array
-    if (highestImageIndex <= size_of_non_repeat) {
-        last_indexes.fill(-1); // Reset the array
+    if (highestImageIndex < 1) {
+        return null;
     }
 
-    // It selects a random index until it finds one that is not repeated
-    while (last_indexes.includes(randomIndex) || randomIndex < 0) {
+    if (highestImageIndex <= sizeOfNonRepeat) {
+        lastIndexes.fill(-1);
+    }
+
+    let randomIndex = -1;
+    while (lastIndexes.includes(randomIndex) || randomIndex < 0) {
         randomIndex = Math.floor(Math.random() * highestImageIndex) + 1;
     }
 
-    // When it finds the non repeating index, it eliminates the oldest value, and pushes the current index
-    last_indexes.shift()
-    last_indexes.push(randomIndex)
+    lastIndexes.shift();
+    lastIndexes.push(randomIndex);
 
-    return randomIndex
+    return randomIndex;
 }
 
-var highestImageIndex;
-// Gets the highest index of an image in the image folder starting from 1
 async function getHighestImageIndex() {
-    const INITIAL_INDEX = 4;
-    let i = INITIAL_INDEX;
+    const initialIndex = 4;
+    let index = initialIndex;
 
-    // Increase i until i is greater than the number of images
-    while (await checkImageExistence(i)) {
-        i *= 2;
+    while (await imagePathExists(index)) {
+        index *= 2;
     }
 
-    // Possible min and max values
-    let min = i <= INITIAL_INDEX ? 1 : i / 2;
-    let max = i;
+    let min = index <= initialIndex ? 1 : index / 2;
+    let max = index;
 
-    // Binary search
     while (min <= max) {
-        // Find the midpoint of possible max and min
-        let mid = Math.floor((min + max) / 2);
+        const mid = Math.floor((min + max) / 2);
 
-        // Check if the midpoint exists
-        if (await checkImageExistence(mid)) {
-            // If it does, next min to check is one greater
+        if (await imagePathExists(mid)) {
             min = mid + 1;
         } else {
-            // If it doesn't, max must be at least one less
             max = mid - 1;
         }
     }
 
-    // Max is the size of the image array
     highestImageIndex = max;
 }
-////////////////////////
-//  BrandonXLF Magic  //
-////////////////////////
 
-async function GetFlipBlocklist() {
+async function getFlipBlocklist() {
     try {
         const response = await fetch(chrome.runtime.getURL(`${IMAGES_PATH}flip_blacklist.json`));
         const data = await response.json();
-        useAlternativeImages = data.useAlternativeImages;
-        flipBlacklist = data.blacklistedImages;
-        blacklistStatus = `Flip blacklist found. ${useAlternativeImages ? "Images will be substituted." : "Images won't be flipped."}`;
-    } catch (error) {
-        blacklistStatus = "No flip blacklist found. Proceeding without it";
-    }
-}
 
-async function LoadConfig() {
-    const df /* default */ = {
-        extensionIsDisabled: extensionIsDisabled,
-        appearChance: appearChance,
-        flipChance: flipChance
-    }
+        useAlternativeImages = Boolean(data.useAlternativeImages);
+        flipBlacklist = Array.isArray(data.blacklistedImages) ? data.blacklistedImages : [];
+        alternativeImageSet = new Set();
 
-    try {
-        const config = await new Promise((resolve, reject) => {
-            chrome.storage.local.get({
-                extensionIsDisabled,
-                appearChance,
-                flipChance
-            }, (result) => {
-                chrome.runtime.lastError ? // Check for errors
-                    reject(chrome.runtime.lastError) : // Reject if errors
-                    resolve(result) // Resolve if no errors
-            });
-        });
+        if (useAlternativeImages) {
+            const checks = await Promise.all(
+                flipBlacklist.map(async (imageIndex) => ({
+                    imageIndex,
+                    exists: await imagePathExists(`textFlipped/${imageIndex}`)
+                }))
+            );
 
-        // Initialize variables based on loaded configuration
-        extensionIsDisabled = config.extensionIsDisabled || df.extensionIsDisabled;
-        appearChance = config.appearChance || df.appearChance;
-        flipChance = config.flipChance || df.flipChance;
-
-        if (Object.keys(config).length === 0 && config.constructor === Object /* config doesn't exist */ ) {
-            await new Promise((resolve, reject) => {
-                chrome.storage.local.set(df, () => {
-                    chrome.runtime.lastError ? // Check for errors
-                        reject(chrome.runtime.lastError) : // Reject if errors
-                        resolve() // Resolve if no errors
-                })
-            })
+            checks
+                .filter((check) => check.exists)
+                .forEach((check) => alternativeImageSet.add(check.imageIndex));
         }
+
+        blacklistStatus = `Flip blacklist found. ${alternativeImageSet.size} alternative images available.`;
     } catch (error) {
-        console.error("Guhh?? Error loading configuration:", error);
+        useAlternativeImages = false;
+        flipBlacklist = [];
+        alternativeImageSet = new Set();
+        blacklistStatus = "No flip blacklist found. Proceeding without it.";
     }
 }
 
-async function Main() {
-    await LoadConfig()
+function getImageSource(image) {
+    return image.currentSrc || image.src || image.dataset.src || image.getAttribute("data-src") || "";
+}
+
+function getVisibleSize(image) {
+    const rect = image.getBoundingClientRect();
+    const width = rect.width || image.naturalWidth || image.width;
+    const height = rect.height || image.naturalHeight || image.height;
+
+    return { width, height };
+}
+
+function hasCoverAncestor(image) {
+    return coverContainerSelectors.some((selector) => image.closest(selector));
+}
+
+function isInsideExcludedContainer(image) {
+    if (hasCoverAncestor(image)) {
+        return false;
+    }
+
+    return excludedContainers.some((selector) => image.closest(selector));
+}
+
+function hasExcludedClass(image) {
+    const classes = [
+        image.className,
+        image.parentElement?.className,
+        image.parentElement?.parentElement?.className
+    ].join(" ");
+
+    return /\b(avatar|face|logo|icon|emoji|badge|medal|vip|qrcode)\b/i.test(classes);
+}
+
+function isNonCoverSource(source) {
+    return [
+        "/bfs/face/",
+        "/bfs/member/",
+        "/bfs/garb/",
+        "/bfs/vip/",
+        "/favicon",
+        "/live.gif",
+        "/512.png",
+        "static/jinkela/long/images/live.gif"
+    ].some((token) => source.includes(token));
+}
+
+function sourceLooksLikeCover(source) {
+    return [
+        "/bfs/archive/",
+        "/bfs/sycp/",
+        "/bfs/banner/",
+        "/bfs/live-key-frame/",
+        "archive.biliimg.com/bfs/archive"
+    ].some((token) => source.includes(token));
+}
+
+function linkLooksLikeMedia(image) {
+    const link = image.closest("a[href]");
+    if (!link) {
+        return false;
+    }
+
+    const href = link.href || "";
+    return /bilibili\.com\/(video|bangumi|blackboard|festival|cheese|read|list|v\/popular)|live\.bilibili\.com|cm\.bilibili\.com/.test(href);
+}
+
+function sizeLooksLikeCover(image) {
+    const { width, height } = getVisibleSize(image);
+    if (width < 80 || height < 45) {
+        return false;
+    }
+
+    const ratio = width / height;
+    if (!Number.isFinite(ratio)) {
+        return false;
+    }
+
+    return ratio >= 1.2 && ratio <= 12;
+}
+
+function isAlreadyProcessed(image) {
+    const container = getOverlayContainer(image);
+    return image.hasAttribute(PROCESSED_ATTR) || Boolean(container?.querySelector(`[${OVERLAY_ATTR}]`));
+}
+
+function getOverlayContainer(image) {
+    return coverContainerSelectors
+        .map((selector) => image.closest(selector))
+        .find((container) => container && container.contains(image)) || image.parentElement;
+}
+
+function isCandidateImage(image) {
+    if (!(image instanceof HTMLImageElement) || !image.isConnected) {
+        return false;
+    }
+
+    if (image.hasAttribute(OVERLAY_ATTR) || isAlreadyProcessed(image)) {
+        return false;
+    }
+
+    const source = getImageSource(image);
+    if (!source || isNonCoverSource(source)) {
+        return false;
+    }
+
+    if (isInsideExcludedContainer(image) || hasExcludedClass(image)) {
+        return false;
+    }
+
+    if (!sizeLooksLikeCover(image)) {
+        return false;
+    }
+
+    return hasCoverAncestor(image) || sourceLooksLikeCover(source) || linkLooksLikeMedia(image);
+}
+
+function findThumbnails() {
+    const images = new Set();
+
+    explicitImageSelectors.forEach((selector) => {
+        document.querySelectorAll(selector).forEach((image) => images.add(image));
+    });
+
+    return Array.from(images).filter(isCandidateImage);
+}
+
+function markProcessed(image, container) {
+    image.setAttribute(PROCESSED_ATTR, "true");
+    if (container) {
+        container.setAttribute(CONTAINER_ATTR, "true");
+    }
+}
+
+function applyOverlay(image, container, overlayImageURL, flip = false) {
+    const previousPosition = getComputedStyle(container).position;
+    if (previousPosition === "static") {
+        container.style.position = "relative";
+        container.setAttribute(OWNED_POSITION_ATTR, "true");
+    }
+
+    const overlayImage = document.createElement("img");
+    overlayImage.alt = "";
+    overlayImage.draggable = false;
+    overlayImage.src = overlayImageURL;
+    overlayImage.setAttribute(OVERLAY_ATTR, "true");
+    overlayImage.style.position = "absolute";
+    overlayImage.style.inset = "0";
+    overlayImage.style.width = "100%";
+    overlayImage.style.height = "100%";
+    overlayImage.style.objectFit = "contain";
+    overlayImage.style.pointerEvents = "none";
+    overlayImage.style.transform = flip ? "scaleX(-1)" : "";
+    overlayImage.style.zIndex = "1";
+
+    container.appendChild(overlayImage);
+}
+
+function applyOverlayToImage(image) {
+    const container = getOverlayContainer(image);
+    if (!container) {
+        return;
+    }
+
+    markProcessed(image, container);
+
+    const loops = Math.random() > 0.001 ? 1 : 20;
+    for (let i = 0; i < loops; i++) {
+        let flip = Math.random() < flipChance;
+        let baseImagePath = getRandomImageFromDirectory();
+        if (baseImagePath === null) {
+            return;
+        }
+
+        if (flip && flipBlacklist.includes(baseImagePath)) {
+            if (useAlternativeImages && alternativeImageSet.has(baseImagePath)) {
+                baseImagePath = `textFlipped/${baseImagePath}`;
+                flip = false;
+            } else {
+                flip = false;
+            }
+        }
+
+        if (Math.random() < appearChance) {
+            applyOverlay(image, container, getImageURL(baseImagePath), flip);
+        }
+    }
+}
+
+function applyOverlayToThumbnails() {
+    if (extensionIsDisabled) {
+        return;
+    }
+
+    findThumbnails().forEach(applyOverlayToImage);
+}
+
+function cleanupOverlays() {
+    document.querySelectorAll(`[${OVERLAY_ATTR}]`).forEach((overlay) => overlay.remove());
+    document.querySelectorAll(`[${PROCESSED_ATTR}]`).forEach((image) => image.removeAttribute(PROCESSED_ATTR));
+    document.querySelectorAll(`[${CONTAINER_ATTR}]`).forEach((container) => {
+        container.removeAttribute(CONTAINER_ATTR);
+        if (container.getAttribute(OWNED_POSITION_ATTR) === "true") {
+            container.style.position = "";
+            container.removeAttribute(OWNED_POSITION_ATTR);
+        }
+    });
+}
+
+function scheduleScan(delay = SCHEDULE_DELAY_MS) {
+    if (extensionIsDisabled || scheduledScan !== null) {
+        return;
+    }
+
+    scheduledScan = window.setTimeout(() => {
+        scheduledScan = null;
+        applyOverlayToThumbnails();
+    }, delay);
+}
+
+function handlePossibleRouteChange() {
+    if (currentURL !== location.href) {
+        currentURL = location.href;
+        scheduleScan(250);
+    }
+}
+
+function startObservers() {
+    if (observer) {
+        observer.disconnect();
+    }
+
+    observer = new MutationObserver((mutations) => {
+        const shouldScan = mutations.some((mutation) => (
+            mutation.type === "childList" ||
+            (mutation.type === "attributes" && ["src", "srcset", "class", "style"].includes(mutation.attributeName))
+        ));
+
+        if (shouldScan) {
+            handlePossibleRouteChange();
+            scheduleScan();
+        }
+    });
+
+    observer.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["src", "srcset", "class", "style"],
+        childList: true,
+        subtree: true
+    });
+
+    window.addEventListener("popstate", () => scheduleScan(250));
+
+    if (fallbackInterval) {
+        window.clearInterval(fallbackInterval);
+    }
+
+    fallbackInterval = window.setInterval(() => {
+        handlePossibleRouteChange();
+        scheduleScan(0);
+    }, FALLBACK_SCAN_MS);
+}
+
+function listenForSettingsChanges() {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName !== "local") {
+            return;
+        }
+
+        if (changes.extensionIsDisabled) {
+            extensionIsDisabled = Boolean(changes.extensionIsDisabled.newValue);
+        }
+
+        if (changes.appearChance) {
+            appearChance = clampChance(changes.appearChance.newValue, appearChance);
+        }
+
+        if (changes.flipChance) {
+            flipChance = clampChance(changes.flipChance.newValue, flipChance);
+        }
+
+        if (extensionIsDisabled) {
+            cleanupOverlays();
+        } else {
+            scheduleScan(0);
+        }
+    });
+}
+
+async function main() {
+    await loadConfig();
+    await getFlipBlocklist();
+    await getHighestImageIndex();
+    listenForSettingsChanges();
 
     if (extensionIsDisabled) {
-        console.info(`${EXTENSION_NAME} is disabled.`)
-        return // Exit the function if MrBeastify is disabled
+        cleanupOverlays();
+        console.info(`${EXTENSION_NAME} is disabled.`);
+        return;
     }
 
-    await GetFlipBlocklist()
-    console.info(`${EXTENSION_NAME} will now detect the amount of images. Ignore all the following errors.`)
-    await getHighestImageIndex()
-        .then(() => {
-            setInterval(applyOverlayToThumbnails, 100);
-            console.info(
-                `${EXTENSION_NAME} Loaded Successfully. ${highestImageIndex} images detected. ${blacklistStatus}.`
-            );
-        })
+    startObservers();
+    scheduleScan(0);
+    console.info(`${EXTENSION_NAME} loaded successfully. ${highestImageIndex} images detected. ${blacklistStatus}`);
 }
 
-Main()
+main();

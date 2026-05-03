@@ -1,0 +1,13 @@
+{
+    "name": "mrbeastify-bilibili",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "check": "node -e \"for (const f of ['manifest.json','manifest v3.json','images/flip_blacklist.json']) JSON.parse(require('fs').readFileSync(f, 'utf8'))\" && node --check mrbeastify.js && node --check settings.js && node --check scripts/smoke-test.mjs",
+        "smoke": "node scripts/smoke-test.mjs"
+    },
+    "devDependencies": {
+        "playwright": "^1.59.1"
+    }
+}

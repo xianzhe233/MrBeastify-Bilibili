@@ -1,5 +1,7 @@
 
 *.zip
+node_modules/
+test-artifacts/
 /allcolibri
 buildcolibri.bat
 buildrefoorest.bat

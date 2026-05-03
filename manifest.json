@@ -1,25 +1,44 @@
 {
-    "manifest_version": 2,
-    "name": "YouTube MrBeastify",
-    "version": "1.9.0",
+    "manifest_version": 3,
+    "name": "Bilibili MrBeastify",
+    "version": "1.0.0",
     "icons": {
         "96": "icon.png"
     },
-    "description": "Modify YouTube thumbnails to include MrBeast",
-    "browser_action": {
+    "description": "Modify Bilibili thumbnails to include MrBeast",
+    "action": {
         "default_popup": "settings.html"
     },
     "permissions": [
-        "storage",
-        "*://*.youtube.com/*"
+        "storage"
     ],
-    "content_scripts": [{
-        "matches": ["*://*.youtube.com/*"],
-        "js": ["mrbeastify.js"],
-        "run_at": "document_idle"
-    }],
+    "host_permissions": [
+        "*://bilibili.com/*",
+        "*://*.bilibili.com/*"
+    ],
+    "content_scripts": [
+        {
+            "matches": [
+                "*://bilibili.com/*",
+                "*://*.bilibili.com/*"
+            ],
+            "js": [
+                "mrbeastify.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ],
     "web_accessible_resources": [
-        "images/*.png",
-        "images/*.json"
+        {
+            "resources": [
+                "images/*.png",
+                "images/*.json",
+                "images/textFlipped/*.png"
+            ],
+            "matches": [
+                "*://bilibili.com/*",
+                "*://*.bilibili.com/*"
+            ]
+        }
     ]
 }

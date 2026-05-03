@@ -1,55 +1,44 @@
-let extensionIsDisabled
-let appearChance
-let flipChance
+const defaults = {
+    extensionIsDisabled: false,
+    appearChance: 1.00,
+    flipChance: 0.25
+};
 
-// Function to load settings from Chrome storage
+function clampPercent(value, fallback) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+        return fallback;
+    }
+
+    return Math.max(0, Math.min(100, numericValue));
+}
+
 function loadSettings() {
-    chrome.storage.local.get({
-        extensionIsDisabled: false,
-        appearChance: 1.00,
-        flipChance: 0.25
-    }, function (data) {
-        document.getElementById('disableExtension').checked = !data.extensionIsDisabled;
-        document.getElementById('appearChance').value = data.appearChance * 100;
-        document.getElementById('flipChance').value = data.flipChance * 100;
+    chrome.storage.local.get(defaults, (data) => {
+        document.getElementById("disableExtension").checked = !data.extensionIsDisabled;
+        document.getElementById("appearChance").value = Math.round(data.appearChance * 100);
+        document.getElementById("flipChance").value = Math.round(data.flipChance * 100);
     });
 }
 
-// Function to save settings to Chrome storage
 function saveSettings() {
-    const data = {
-        extensionIsDisabled: !document.getElementById('disableExtension').checked,
-        appearChance: parseInt(document.getElementById('appearChance').value) / 100,
-        flipChance: parseInt(document.getElementById('flipChance').value) / 100
-    };
+    const appearPercent = clampPercent(document.getElementById("appearChance").value, defaults.appearChance * 100);
+    const flipPercent = clampPercent(document.getElementById("flipChance").value, defaults.flipChance * 100);
 
-    chrome.storage.local.set(data, () => {
+    chrome.storage.local.set({
+        extensionIsDisabled: !document.getElementById("disableExtension").checked,
+        appearChance: appearPercent / 100,
+        flipChance: flipPercent / 100
+    }, () => {
         if (chrome.runtime.lastError) {
             console.error("Error saving settings:", chrome.runtime.lastError);
-        } else {
-            console.log("Settings saved successfully.");
         }
     });
 }
 
-function ChangeNameInHeading() {
-    // Get the extension name
-    let extensionName = chrome.runtime.getManifest().name;
-
-    // Remove "youtube" (case-insensitive) from the extension name and trim
-    extensionName = extensionName.replace(/youtube/i, '').trim();
-
-    // Replace "MrBeastify" in the title with the cleaned extension name
-    const titleElement = document.getElementById('extension-title');
-    titleElement.textContent = titleElement.textContent.replace('TITLE', extensionName);
-}
-
-// Call loadSettings() when the page loads
-document.addEventListener('DOMContentLoaded', loadSettings);
-
-// Add input event listeners to all input fields to trigger autosave
-document.getElementById('disableExtension').addEventListener('input', saveSettings);
-document.getElementById('appearChance').addEventListener('input', saveSettings);
-document.getElementById('flipChance').addEventListener('input', saveSettings);
-
-document.addEventListener('DOMContentLoaded', ChangeNameInHeading);
+document.addEventListener("DOMContentLoaded", () => {
+    loadSettings();
+    document.getElementById("disableExtension").addEventListener("input", saveSettings);
+    document.getElementById("appearChance").addEventListener("input", saveSettings);
+    document.getElementById("flipChance").addEventListener("input", saveSettings);
+});
