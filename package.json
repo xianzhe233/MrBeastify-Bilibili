@@ -4,6 +4,7 @@
     "private": true,
     "type": "module",
     "scripts": {
+        "build": "node scripts/build-packages.mjs",
         "check": "node -e \"for (const f of ['manifest.json','manifest v3.json','images/flip_blacklist.json']) JSON.parse(require('fs').readFileSync(f, 'utf8'))\" && node --check mrbeastify.js && node --check settings.js && node --check scripts/smoke-test.mjs",
         "smoke": "node scripts/smoke-test.mjs"
     },

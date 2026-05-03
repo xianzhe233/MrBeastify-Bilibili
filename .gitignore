@@ -1,5 +1,6 @@
 
 *.zip
+dist/
 node_modules/
 test-artifacts/
 /allcolibri
